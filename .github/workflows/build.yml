@@ -36,7 +36,3 @@ jobs:
       with:
         name: RupeeTracker-APK
         path: build/app/outputs/flutter-apk/app-release.apk
-        name: RupeeTracker-APK
-        path: build/app/outputs/flutter-apk/app-release.apk
-        name: RupeeTracker-APK
-        path: build/app/outputs/flutter-apk/app-release.apk
