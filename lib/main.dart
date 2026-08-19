@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'package:intl/intl.dart';
+import 'package:flutter_sms_inbox/flutter_sms_inbox.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,7 +16,7 @@ class ExpenseTrackerApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Rupee Expense Tracker',
+      title: 'Expense Tracker',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
@@ -32,8 +34,8 @@ class TransactionModel {
   final int? id;
   final double amount;
   final String type; // Expense, Income, Savings, Credit, Transfer
-  final String account; // Bank, Credit Card, Cash
-  final String? toAccount; // For transfers
+  final String account; // Cash, Bank Account, Credit Card
+  final String? toAccount;
   final String category;
   final String subCategory;
   final String date;
@@ -88,7 +90,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('expenses_v2.db');
+    _database = await _initDB('expenses_v3.db');
     return _database!;
   }
 
@@ -113,6 +115,14 @@ class DatabaseHelper {
             description TEXT
           )
         ''');
+
+        await db.execute('''
+          CREATE TABLE categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL
+          )
+        ''');
       },
     );
   }
@@ -132,6 +142,17 @@ class DatabaseHelper {
     final db = await instance.database;
     return await db.delete('transactions', where: 'id = ?', whereArgs: [id]);
   }
+
+  Future<int> addCustomCategory(String name, String type) async {
+    final db = await instance.database;
+    return await db.insert('categories', {'name': name, 'type': type});
+  }
+
+  Future<List<String>> getCustomCategories(String type) async {
+    final db = await instance.database;
+    final result = await db.query('categories', where: 'type = ?', whereArgs: [type]);
+    return result.map((row) => row['name'] as String).toList();
+  }
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -145,30 +166,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<TransactionModel> _allTransactions = [];
   List<TransactionModel> _filteredTransactions = [];
 
-  String _filterTimeframe = 'All'; // All, Daily, Monthly, Yearly
-  String _filterAccount = 'All'; // All, Bank, Credit Card, Cash
-  String _filterType = 'All'; // All, Expense, Income, Savings, Credit, Transfer
+  String _timeframe = 'Daily'; // Daily, Monthly, Yearly, All
+  String _filterAccount = 'All';
 
-  double _totalExpense = 0.0;
-  double _totalIncome = 0.0;
-  double _totalSavings = 0.0;
-  double _totalCredit = 0.0;
+  double _totalIncome = 0;
+  double _totalExpense = 0;
+  double _totalSavings = 0;
+  double _totalCredit = 0;
 
-  final List<String> _accounts = ['Bank', 'Credit Card', 'Cash'];
+  final List<String> _accounts = ['Cash', 'Bank Account', 'Credit Card'];
   final List<String> _types = ['Expense', 'Income', 'Savings', 'Credit', 'Transfer'];
 
-  final Map<String, List<String>> _defaultCategories = {
+  Map<String, List<String>> _categories = {
     'Expense': ['Food', 'Bills', 'Travel', 'Shopping', 'Health', 'Other'],
     'Income': ['Salary', 'Business', 'Investment', 'Gift', 'Other'],
-    'Savings': ['Fixed Deposit', 'Mutual Funds', 'Gold', 'Emergency Fund'],
-    'Credit': ['Personal Loan', 'Credit Card Bill', 'Borrowed', 'Lent'],
+    'Savings': ['Emergency Fund', 'FD', 'Mutual Funds', 'Gold'],
+    'Credit': ['Personal Loan', 'Borrowed', 'Lent', 'Credit Card Debt'],
     'Transfer': ['Account Transfer'],
   };
 
   @override
   void initState() {
     super.initState();
+    _loadCustomCategories();
     _refreshData();
+  }
+
+  Future<void> _loadCustomCategories() async {
+    for (var type in ['Expense', 'Income', 'Savings', 'Credit']) {
+      final custom = await DatabaseHelper.instance.getCustomCategories(type);
+      if (custom.isNotEmpty) {
+        setState(() {
+          _categories[type]!.addAll(custom);
+          _categories[type] = _categories[type]!.toSet().toList();
+        });
+      }
+    }
   }
 
   Future<void> _refreshData() async {
@@ -185,15 +218,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final monthStr = DateFormat('yyyy-MM').format(now);
     final yearStr = DateFormat('yyyy').format(now);
 
-    double exp = 0, inc = 0, sav = 0, cred = 0;
+    double inc = 0, exp = 0, sav = 0, cred = 0;
 
     List<TransactionModel> list = _allTransactions.where((tx) {
       if (_filterAccount != 'All' && tx.account != _filterAccount) return false;
-      if (_filterType != 'All' && tx.type != _filterType) return false;
 
-      if (_filterTimeframe == 'Daily' && !tx.date.startsWith(todayStr)) return false;
-      if (_filterTimeframe == 'Monthly' && !tx.date.startsWith(monthStr)) return false;
-      if (_filterTimeframe == 'Yearly' && !tx.date.startsWith(yearStr)) return false;
+      if (_timeframe == 'Daily' && !tx.date.startsWith(todayStr)) return false;
+      if (_timeframe == 'Monthly' && !tx.date.startsWith(monthStr)) return false;
+      if (_timeframe == 'Yearly' && !tx.date.startsWith(yearStr)) return false;
 
       return true;
     }).toList();
@@ -207,11 +239,185 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     setState(() {
       _filteredTransactions = list;
-      _totalExpense = exp;
       _totalIncome = inc;
+      _totalExpense = exp;
       _totalSavings = sav;
       _totalCredit = cred;
     });
+  }
+
+  Future<void> _scanSMSAndShowPrompt() async {
+    var status = await Permission.sms.request();
+    if (!status.isGranted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('SMS permission denied.')),
+        );
+      }
+      return;
+    }
+
+    final SmsQuery query = SmsQuery();
+    final messages = await query.querySms(kinds: [SmsQueryKind.inbox], count: 30);
+
+    final txRegex = RegExp(
+      r'(?:debited|spent|paid|credited|received|sent)\s*(?:by|for|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]+)?)',
+      caseSensitive: false,
+    );
+
+    for (var msg in messages) {
+      final body = msg.body ?? '';
+      final match = txRegex.firstMatch(body);
+
+      if (match != null) {
+        final amtString = match.group(1)?.replaceAll(',', '') ?? '0';
+        final amount = double.tryParse(amtString) ?? 0.0;
+
+        if (amount > 0) {
+          final isCredit = body.toLowerCase().contains('credited') || body.toLowerCase().contains('received');
+          final autoType = isCredit ? 'Income' : 'Expense';
+
+          String autoCat = 'Other';
+          if (body.toLowerCase().contains('swiggy') || body.toLowerCase().contains('zomato')) {
+            autoCat = 'Food';
+          } else if (body.toLowerCase().contains('bill') || body.toLowerCase().contains('recharge')) {
+            autoCat = 'Bills';
+          } else if (body.toLowerCase().contains('uber') || body.toLowerCase().contains('ola')) {
+            autoCat = 'Travel';
+          }
+
+          if (mounted) {
+            bool shouldContinue = await _showSmsParsedDialog(amount, autoType, autoCat, body);
+            if (!shouldContinue) break;
+          }
+        }
+      }
+    }
+    await _refreshData();
+  }
+
+  Future<bool> _showSmsParsedDialog(double amount, String autoType, String autoCat, String rawText) async {
+    String selectedType = autoType;
+    String selectedCat = autoCat;
+    String subCategory = '';
+    String selectedAccount = 'Bank Account';
+
+    final subCatController = TextEditingController();
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => StatefulBuilder(
+            builder: (context, setDialogState) {
+              List<String> currentCats = _categories[selectedType] ?? ['Other'];
+              if (!currentCats.contains(selectedCat)) selectedCat = currentCats.first;
+
+              return AlertDialog(
+                title: const Text('Auto SMS Detected'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Amount: ₹$amount', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Text(rawText, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      const Divider(),
+                      DropdownButtonFormField<String>(
+                        value: selectedType,
+                        decoration: const InputDecoration(labelText: 'Type'),
+                        items: _types.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                        onChanged: (val) => setDialogState(() => selectedType = val!),
+                      ),
+                      DropdownButtonFormField<String>(
+                        value: selectedAccount,
+                        decoration: const InputDecoration(labelText: 'Destination Account'),
+                        items: _accounts.map((a) => DropdownMenuItem(value: a, child: Text(a))).toList(),
+                        onChanged: (val) => setDialogState(() => selectedAccount = val!),
+                      ),
+                      DropdownButtonFormField<String>(
+                        value: selectedCat,
+                        decoration: const InputDecoration(labelText: 'Category'),
+                        items: currentCats.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                        onChanged: (val) => setDialogState(() => selectedCat = val!),
+                      ),
+                      TextField(
+                        controller: subCatController,
+                        decoration: const InputDecoration(labelText: 'Sub-Category (Optional)'),
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(ctx, true), // Skip this SMS
+                    child: const Text('Skip / Ignore', style: TextStyle(color: Colors.red)),
+                  ),
+                  ElevatedButton(
+                    onPressed: () async {
+                      await DatabaseHelper.instance.insertTransaction(
+                        TransactionModel(
+                          amount: amount,
+                          type: selectedType,
+                          account: selectedAccount,
+                          category: selectedCat,
+                          subCategory: subCatController.text.trim(),
+                          date: DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now()),
+                          description: 'SMS Auto Sync',
+                        ),
+                      );
+                      if (mounted) Navigator.pop(ctx, true);
+                    },
+                    child: const Text('Add Entry'),
+                  ),
+                ],
+              );
+            },
+          ),
+        ) ??
+        true;
+  }
+
+  void _showAddCategoryDialog() {
+    final catController = TextEditingController();
+    String targetType = 'Expense';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          title: const Text('Add Custom Category'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                value: targetType,
+                decoration: const InputDecoration(labelText: 'Module Type'),
+                items: ['Expense', 'Income', 'Savings', 'Credit'].map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                onChanged: (val) => setModalState(() => targetType = val!),
+              ),
+              TextField(
+                controller: catController,
+                decoration: const InputDecoration(labelText: 'Category Name'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                final text = catController.text.trim();
+                if (text.isNotEmpty) {
+                  await DatabaseHelper.instance.addCustomCategory(text, targetType);
+                  await _loadCustomCategories();
+                  if (mounted) Navigator.pop(ctx);
+                }
+              },
+              child: const Text('Save Category'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showAddTransactionDialog() {
@@ -220,9 +426,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final subCatController = TextEditingController();
 
     String selectedType = 'Expense';
-    String selectedAccount = 'Bank';
-    String selectedToAccount = 'Cash';
-    String selectedCategory = 'Food';
+    String selectedAccount = 'Cash';
+    String selectedToAccount = 'Bank Account';
+    String selectedCat = _categories['Expense']!.first;
 
     showModalBottomSheet(
       context: context,
@@ -232,10 +438,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       builder: (ctx) => StatefulBuilder(
         builder: (context, setModalState) {
-          List<String> categories = _defaultCategories[selectedType] ?? ['General'];
-          if (!categories.contains(selectedCategory)) {
-            selectedCategory = categories.first;
-          }
+          List<String> currentCats = _categories[selectedType] ?? ['General'];
+          if (!currentCats.contains(selectedCat)) selectedCat = currentCats.first;
 
           return Padding(
             padding: EdgeInsets.only(
@@ -249,8 +453,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Add Transaction', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 15),
+                  const Text('New Entry', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 10),
                   DropdownButtonFormField<String>(
                     value: selectedType,
                     decoration: const InputDecoration(labelText: 'Type', border: OutlineInputBorder()),
@@ -258,7 +462,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     onChanged: (val) {
                       setModalState(() {
                         selectedType = val!;
-                        selectedCategory = _defaultCategories[selectedType]!.first;
+                        selectedCat = _categories[selectedType]!.first;
                       });
                     },
                   ),
@@ -269,7 +473,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         child: DropdownButtonFormField<String>(
                           value: selectedAccount,
                           decoration: InputDecoration(
-                            labelText: selectedType == 'Transfer' ? 'From Account' : 'Account',
+                            labelText: selectedType == 'Transfer' ? 'From' : 'Account',
                             border: const OutlineInputBorder(),
                           ),
                           items: _accounts.map((a) => DropdownMenuItem(value: a, child: Text(a))).toList(),
@@ -281,7 +485,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Expanded(
                           child: DropdownButtonFormField<String>(
                             value: selectedToAccount,
-                            decoration: const InputDecoration(labelText: 'To Account', border: OutlineInputBorder()),
+                            decoration: const InputDecoration(labelText: 'To', border: OutlineInputBorder()),
                             items: _accounts.where((a) => a != selectedAccount).map((a) => DropdownMenuItem(value: a, child: Text(a))).toList(),
                             onChanged: (val) => setModalState(() => selectedToAccount = val!),
                           ),
@@ -292,15 +496,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 10),
                   if (selectedType != 'Transfer') ...[
                     DropdownButtonFormField<String>(
-                      value: selectedCategory,
+                      value: selectedCat,
                       decoration: const InputDecoration(labelText: 'Category', border: OutlineInputBorder()),
-                      items: categories.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
-                      onChanged: (val) => setModalState(() => selectedCategory = val!),
+                      items: currentCats.map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
+                      onChanged: (val) => setModalState(() => selectedCat = val!),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: subCatController,
-                      decoration: const InputDecoration(labelText: 'Sub Category (Optional)', border: OutlineInputBorder()),
+                      decoration: const InputDecoration(labelText: 'Sub-Category (Optional)', border: OutlineInputBorder()),
                     ),
                     const SizedBox(height: 10),
                   ],
@@ -329,7 +533,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               type: selectedType,
                               account: selectedAccount,
                               toAccount: selectedType == 'Transfer' ? selectedToAccount : null,
-                              category: selectedType == 'Transfer' ? 'Transfer' : selectedCategory,
+                              category: selectedType == 'Transfer' ? 'Transfer' : selectedCat,
                               subCategory: subCatController.text.trim(),
                               date: DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now()),
                               description: descController.text.trim(),
@@ -339,7 +543,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           if (mounted) Navigator.pop(ctx);
                         }
                       },
-                      child: const Text('Save Transaction', style: TextStyle(color: Colors.white, fontSize: 16)),
+                      child: const Text('Save Entry', style: TextStyle(color: Colors.white, fontSize: 16)),
                     ),
                   ),
                 ],
@@ -359,11 +563,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           padding: const EdgeInsets.all(12),
           child: Column(
             children: [
-              Icon(icon, color: color, size: 24),
-              const SizedBox(height: 5),
-              Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              const SizedBox(height: 5),
-              Text('₹$amount', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color)),
+              Icon(icon, color: color, size: 22),
+              const SizedBox(height: 4),
+              Text(title, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+              const SizedBox(height: 4),
+              Text('₹$amount', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
             ],
           ),
         ),
@@ -385,17 +589,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Rupee Expense Tracker', style: TextStyle(fontWeight: FontWeight.bold)),
-        elevation: 0,
+        title: const Text('Expense Tracker', style: TextStyle(fontWeight: FontWeight.bold)),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.sms),
+            tooltip: 'Fetch SMS Transactions',
+            onPressed: _scanSMSAndShowPrompt,
+          ),
+          IconButton(
+            icon: const Icon(Icons.category),
+            tooltip: 'Add Custom Category',
+            onPressed: _showAddCategoryDialog,
+          ),
+        ],
       ),
       body: Column(
         children: [
+          // Timeframe Toggle Bar
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: ['Daily', 'Monthly', 'Yearly', 'All'].map((t) {
+                final isSelected = _timeframe == t;
+                return ChoiceChip(
+                  label: Text(t),
+                  selected: isSelected,
+                  onSelected: (val) {
+                    setState(() {
+                      _timeframe = t;
+                      _applyFilters();
+                    });
+                  },
+                );
+              }).toList(),
+            ),
+          ),
+
+          // Balance Overview Cards
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
             child: Row(
               children: [
-                _buildSummaryCard('Income', _totalIncome.toStringAsFixed(0), Colors.green, Icons.arrow_downward),
-                _buildSummaryCard('Expense', _totalExpense.toStringAsFixed(0), Colors.red, Icons.arrow_upward),
+                _buildSummaryCard('Income (+)', _totalIncome.toStringAsFixed(0), Colors.green, Icons.arrow_downward),
+                _buildSummaryCard('Expense (-)', _totalExpense.toStringAsFixed(0), Colors.red, Icons.arrow_upward),
               ],
             ),
           ),
@@ -404,60 +641,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Row(
               children: [
                 _buildSummaryCard('Savings', _totalSavings.toStringAsFixed(0), Colors.blue, Icons.savings),
-                _buildSummaryCard('Credit/Loans', _totalCredit.toStringAsFixed(0), Colors.orange, Icons.credit_card),
+                _buildSummaryCard('Credit / Loans', _totalCredit.toStringAsFixed(0), Colors.orange, Icons.credit_card),
               ],
             ),
           ),
-          const SizedBox(height: 10),
+
+          // Account Filter Dropdown
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 15),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
             child: Row(
               children: [
-                Expanded(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: _filterTimeframe,
-                    items: ['All', 'Daily', 'Monthly', 'Yearly']
-                        .map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-                    onChanged: (val) {
-                      _filterTimeframe = val!;
-                      _applyFilters();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 10),
+                const Text('Account Filter: ', style: TextStyle(fontWeight: FontWeight.bold)),
                 Expanded(
                   child: DropdownButton<String>(
                     isExpanded: true,
                     value: _filterAccount,
-                    items: ['All', 'Bank', 'Credit Card', 'Cash']
-                        .map((a) => DropdownMenuItem(value: a, child: Text(a))).toList(),
+                    items: ['All', 'Cash', 'Bank Account', 'Credit Card'].map((a) => DropdownMenuItem(value: a, child: Text(a))).toList(),
                     onChanged: (val) {
-                      _filterAccount = val!;
-                      _applyFilters();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: _filterType,
-                    items: ['All', 'Expense', 'Income', 'Savings', 'Credit', 'Transfer']
-                        .map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
-                    onChanged: (val) {
-                      _filterType = val!;
-                      _applyFilters();
+                      setState(() {
+                        _filterAccount = val!;
+                        _applyFilters();
+                      });
                     },
                   ),
                 ),
               ],
             ),
           ),
-          const Divider(),
+
+          const Divider(height: 1),
+
+          // Transaction List
           Expanded(
             child: _filteredTransactions.isEmpty
-                ? const Center(child: Text('No transactions match the selected filters.'))
+                ? const Center(child: Text('No transactions match current filters.'))
                 : ListView.builder(
                     itemCount: _filteredTransactions.length,
                     itemBuilder: (ctx, index) {
