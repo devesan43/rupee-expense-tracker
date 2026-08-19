@@ -1,22 +1,17 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-import 'package:telephony_plus/telephony_plus.dart';
-// Background SMS Handler
-@pragma('vm:entry-point')
-void backgrounSmsHandler(SmsMessage message) {
-  debugPrint("Background SMS Received: ${message.body}");
-  // Background processing logic handles auto-parsing when app is closed
-}
+import 'package:path/path.dart' as p;
+import 'package:intl/intl.dart';
+import 'package:flutter_sms_inbox/flutter_sms_inbox.dart';
+import 'package:permission_handler/permission_handler.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const RupeeExpenseTrackerApp());
+  runApp(const ExpenseTrackerApp());
 }
 
-class RupeeExpenseTrackerApp extends StatelessWidget {
-  const RupeeExpenseTrackerApp({super.key});
+class ExpenseTrackerApp extends StatelessWidget {
+  const ExpenseTrackerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -24,320 +19,367 @@ class RupeeExpenseTrackerApp extends StatelessWidget {
       title: 'Rupee Expense Tracker',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E3A8A),
-          brightness: Brightness.light,
-        ),
         useMaterial3: true,
+        colorSchemeSeed: Colors.green,
       ),
-      home: const DashboardScreen(),
+      home: const HomeScreen(),
     );
   }
 }
 
-class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+class TransactionModel {
+  final int? id;
+  final double amount;
+  final String category;
+  final String date;
+  final String description;
+  final String type; // 'expense' or 'savings'
 
-  @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  TransactionModel({
+    this.id,
+    required this.amount,
+    required this.category,
+    required this.date,
+    required this.description,
+    required this.type,
+  });
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'amount': amount,
+      'category': category,
+      'date': date,
+      'description': description,
+      'type': type,
+    };
+  }
+
+  factory TransactionModel.fromMap(Map<String, dynamic> map) {
+    return TransactionModel(
+      id: map['id'],
+      amount: map['amount'],
+      category: map['category'],
+      date: map['date'],
+      description: map['description'],
+      type: map['type'],
+    );
+  }
 }
 
-class _DashboardScreenState extends State<DashboardScreen> {
-  final Telephony telephony = Telephony.instance;
-  Database? _db;
+class DatabaseHelper {
+  static final DatabaseHelper instance = DatabaseHelper._init();
+  static Database? _database;
 
-  // Operational Balances
-  double cashBalance = 3500.0;
-  double bankBalance = 85000.0;
-  double creditCardBalance = -12400.0;
+  DatabaseHelper._init();
 
-  // Cumulative Categories
-  Map<String, Map<String, double>> savingsCategories = {
-    'Fixed Deposits': {'FD 1': 10.0, 'FD 2': 30.0},
-    'Mutual Funds': {'Equity Fund A': 1000.0},
-  };
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDB('expenses.db');
+    return _database!;
+  }
 
-  Map<String, Map<String, double>> liabilityCategories = {
-    'Personal Loans': {'Loan 1': 30000.0, 'Friend Loan': 10000.0},
-  };
+  Future<Database> _initDB(String filePath) async {
+    final dbPath = await getDatabasesPath();
+    final path = p.join(dbPath, filePath);
 
-  List<Map<String, dynamic>> transactions = [];
+    return await openDatabase(
+      path,
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            amount REAL NOT NULL,
+            category TEXT NOT NULL,
+            date TEXT NOT NULL,
+            description TEXT NOT NULL,
+            type TEXT NOT NULL
+          )
+        ''');
+      },
+    );
+  }
+
+  Future<int> insertTransaction(TransactionModel tx) async {
+    final db = await instance.database;
+    return await db.insert('transactions', tx.toMap());
+  }
+
+  Future<List<TransactionModel>> getAllTransactions() async {
+    final db = await instance.database;
+    final result = await db.query('transactions', orderBy: 'id DESC');
+    return result.map((json) => TransactionModel.fromMap(json)).toList();
+  }
+
+  Future<int> deleteTransaction(int id) async {
+    final db = await instance.database;
+    return await db.delete('transactions', where: 'id = ?', whereArgs: [id]);
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final SmsQuery _query = SmsQuery();
+  List<TransactionModel> _transactions = [];
+  double _totalExpenses = 0.0;
+  double _totalSavings = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _initDatabase();
-    _initSmsListener();
+    _refreshData();
   }
 
-  Future<void> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
-    _db = await openDatabase(
-      p.join(dbPath, 'rupee_tracker.db'),
-      onCreate: (db, version) async {
-        await db.execute('''
-          CREATE TABLE transactions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            amount REAL,
-            type TEXT,
-            account TEXT,
-            category TEXT,
-            subCategory TEXT,
-            date TEXT
-          )
-        ''');
-      },
-      version: 1,
-    );
-    _loadTransactions();
-  }
+  Future<void> _refreshData() async {
+    final data = await DatabaseHelper.instance.getAllTransactions();
+    double expenses = 0.0;
+    double savings = 0.0;
 
-  Future<void> _loadTransactions() async {
-    if (_db == null) return;
-    final List<Map<String, dynamic>> maps = await _db!.query('transactions', orderBy: 'id DESC');
+    for (var tx in data) {
+      if (tx.type == 'expense') {
+        expenses += tx.amount;
+      } else {
+        savings += tx.amount;
+      }
+    }
+
     setState(() {
-      transactions = maps;
+      _transactions = data;
+      _totalExpenses = expenses;
+      _totalSavings = savings;
     });
   }
 
-  void _initSmsListener() async {
-    bool? permissionsGranted = await telephony.requestPhoneAndSmsPermissions;
-    if (permissionsGranted == true) {
-      telephony.listenIncomingSms(
-        onNewMessage: (SmsMessage message) {
-          _processIncomingSms(message.body ?? "");
-        },
-        onBackgroundMessage: backgrounSmsHandler,
+  Future<void> _scanSMS() async {
+    var status = await Permission.sms.request();
+    if (status.isGranted) {
+      final messages = await _query.querySms(
+        kinds: [SmsQueryKind.inbox],
+        count: 50,
       );
+
+      final debitRegex = RegExp(
+        r'(?:debited|spent|paid|sent)\s*(?:by|for|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]+)?)',
+        caseSensitive: false,
+      );
+
+      int addedCount = 0;
+      for (var msg in messages) {
+        final body = msg.body ?? '';
+        final match = debitRegex.firstMatch(body);
+        if (match != null) {
+          final amtString = match.group(1)?.replaceAll(',', '') ?? '0';
+          final amount = double.tryParse(amtString) ?? 0.0;
+          if (amount > 0) {
+            final dateStr = DateFormat('dd MMM yyyy')
+                .format(msg.date ?? DateTime.now());
+            await DatabaseHelper.instance.insertTransaction(
+              TransactionModel(
+                amount: amount,
+                category: 'SMS Auto',
+                date: dateStr,
+                description: body.length > 30 ? body.substring(0, 30) : body,
+                type: 'expense',
+              ),
+            );
+            addedCount++;
+          }
+        }
+      }
+
+      await _refreshData();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Auto-detected $addedCount expenses from SMS')),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('SMS permission denied')),
+        );
+      }
     }
   }
 
-  void _processIncomingSms(String smsBody) {
-    // Regex matching Indian Rs / INR amounts
-    final regExp = RegExp(r'(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)', caseSensitive: false);
-    final match = regExp.firstMatch(smsBody);
-
-    if (match != null) {
-      String rawAmount = match.group(1)!.replaceAll(',', '');
-      double amount = double.tryParse(rawAmount) ?? 0.0;
-      bool isDebit = smsBody.toLowerCase().contains("debited") || smsBody.toLowerCase().contains("spent");
-
-      _showTransactionPopup(amount, isDebit, smsBody);
-    }
-  }
-
-  void _showTransactionPopup(double amount, bool isDebit, String rawSms) {
-    String selectedCategory = isDebit ? 'Food & Dining' : 'Salary';
-    String selectedSubCategory = isDebit ? 'Restaurant' : 'Monthly Credit';
-    String selectedAccount = 'Bank Account';
+  void _showAddDialog() {
+    final amountController = TextEditingController();
+    final descController = TextEditingController();
+    String category = 'Food';
+    String type = 'expense';
 
     showDialog(
       context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          title: Row(
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add Transaction'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(isDebit ? Icons.remove_circle : Icons.add_circle, color: isDebit ? Colors.red : Colors.green),
-              const SizedBox(width: 8),
-              Text(isDebit ? 'Debit Alert Detected' : 'Credit Alert Detected'),
+              TextField(
+                controller: amountController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Amount (₹)'),
+              ),
+              TextField(
+                controller: descController,
+                decoration: const InputDecoration(labelText: 'Description'),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                value: type,
+                items: const [
+                  DropdownMenuItem(value: 'expense', child: Text('Expense')),
+                  DropdownMenuItem(value: 'savings', child: Text('Savings')),
+                ],
+                onChanged: (val) => type = val!,
+                decoration: const InputDecoration(labelText: 'Type'),
+              ),
+              DropdownButtonFormField<String>(
+                value: category,
+                items: ['Food', 'Bills', 'Travel', 'Shopping', 'Other']
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (val) => category = val!,
+                decoration: const InputDecoration(labelText: 'Category'),
+              ),
             ],
           ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text("Amount: ₹${amount.toStringAsFixed(2)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Text("SMS: \"$rawSms\"", style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                const Divider(),
-                DropdownButtonFormField<String>(
-                  value: selectedAccount,
-                  decoration: const InputDecoration(labelText: 'Account'),
-                  items: ['Cash', 'Bank Account', 'Credit Card'].map((acc) => DropdownMenuItem(value: acc, child: Text(acc))).toList(),
-                  onChanged: (val) => selectedAccount = val!,
-                ),
-                DropdownButtonFormField<String>(
-                  value: selectedCategory,
-                  decoration: const InputDecoration(labelText: 'Category'),
-                  items: (isDebit ? ['Food & Dining', 'Utilities', 'Shopping'] : ['Salary', 'Freelance', 'Dividends'])
-                      .map((cat) => DropdownMenuItem(value: cat, child: Text(cat))).toList(),
-                  onChanged: (val) => selectedCategory = val!,
-                ),
-              ],
-            ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Ignore / Skip', style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                await _saveTransaction(amount, isDebit ? 'EXPENSE' : 'INCOME', selectedAccount, selectedCategory, selectedSubCategory);
-                if (mounted) Navigator.pop(context);
-              },
-              child: const Text('Save Transaction'),
-            ),
-          ],
-        );
-      },
+          ElevatedButton(
+            onPressed: () async {
+              final amt = double.tryParse(amountController.text) ?? 0.0;
+              if (amt > 0) {
+                await DatabaseHelper.instance.insertTransaction(
+                  TransactionModel(
+                    amount: amt,
+                    category: category,
+                    date: DateFormat('dd MMM yyyy').format(DateTime.now()),
+                    description: descController.text.isEmpty
+                        ? category
+                        : descController.text,
+                    type: type,
+                  ),
+                );
+                await _refreshData();
+                if (mounted) Navigator.pop(ctx);
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     );
-  }
-
-  Future<void> _saveTransaction(double amount, String type, String account, String category, String subCategory) async {
-    if (_db == null) return;
-    await _db!.insert('transactions', {
-      'amount': amount,
-      'type': type,
-      'account': account,
-      'category': category,
-      'subCategory': subCategory,
-      'date': DateFormat('dd MMM yyyy, hh:mm a').format(DateTime.now()),
-    });
-
-    setState(() {
-      if (type == 'EXPENSE') {
-        if (account == 'Bank Account') bankBalance -= amount;
-        if (account == 'Cash') cashBalance -= amount;
-        if (account == 'Credit Card') creditCardBalance -= amount;
-      } else {
-        if (account == 'Bank Account') bankBalance += amount;
-        if (account == 'Cash') cashBalance += amount;
-      }
-    });
-
-    _loadTransactions();
-  }
-
-  double _getSavingsTotal() {
-    double total = 0;
-    savingsCategories.forEach((_, subMap) {
-      subMap.forEach((_, val) => total += val);
-    });
-    return total;
-  }
-
-  double _getLiabilityTotal() {
-    double total = 0;
-    liabilityCategories.forEach((_, subMap) {
-      subMap.forEach((_, val) => total += val);
-    });
-    return total;
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Rupee Expense Tracker', style: TextStyle(color: Colors.white)),
-        backgroundColor: const Color(0xFF1E3A8A),
+        title: const Text('Rupee Expense Tracker'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.sms),
+            tooltip: 'Sync SMS Expenses',
+            onPressed: _scanSMS,
+          ),
+        ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Operational Overview Card
-            Card(
-              color: Colors.blue.shade50,
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Operational Balances', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                    const Divider(),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text('Cash: ₹${cashBalance.toStringAsFixed(0)}'),
-                        Text('Bank: ₹${bankBalance.toStringAsFixed(0)}'),
-                        Text('CC Debt: ₹${creditCardBalance.abs().toStringAsFixed(0)}', style: const TextStyle(color: Colors.red)),
-                      ],
-                    ),
-                  ],
-                ),
+      body: Column(
+        children: [
+          Card(
+            margin: const EdgeInsets.all(16),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  Column(
+                    children: [
+                      const Text('Total Expenses',
+                          style: TextStyle(color: Colors.red)),
+                      Text('₹${_totalExpenses.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  Column(
+                    children: [
+                      const Text('Total Savings',
+                          style: TextStyle(color: Colors.green)),
+                      Text('₹${_totalSavings.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 16),
-
-            // Cumulative Separated Accounts
-            Row(
-              children: [
-                Expanded(
-                  child: Card(
-                    color: Colors.green.shade50,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Cumulative Savings', style: TextStyle(fontSize: 12, color: Colors.green)),
-                          Text('₹${_getSavingsTotal().toStringAsFixed(0)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.green)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: Card(
-                    color: Colors.orange.shade50,
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Cumulative Liabilities', style: TextStyle(fontSize: 12, color: Colors.orange)),
-                          Text('₹${_getLiabilityTotal().toStringAsFixed(0)}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.orange)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            // Test Controls
-            ElevatedButton.icon(
-              onPressed: () => _processIncomingSms("Debited by Rs. 850.00 from Bank A/C XX4821 for Swiggy Food Order"),
-              icon: const Icon(Icons.sms),
-              label: const Text('Simulate Incoming Bank SMS'),
-              style: ElevatedButton.styleFrom(minimumSize: const Size.fromHeight(45)),
-            ),
-            const SizedBox(height: 20),
-
-            const Text('Recent Transactions', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-
-            transactions.isEmpty
-                ? const Center(child: Text('No transactions recorded yet.'))
+          ),
+          Expanded(
+            child: _transactions.isEmpty
+                ? const Center(child: Text('No transactions added yet.'))
                 : ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: transactions.length,
-                    itemBuilder: (context, index) {
-                      final item = transactions[index];
-                      bool isExpense = item['type'] == 'EXPENSE';
+                    itemCount: _transactions.length,
+                    itemBuilder: (ctx, index) {
+                      final tx = _transactions[index];
+                      final isExpense = tx.type == 'expense';
                       return ListTile(
                         leading: CircleAvatar(
-                          backgroundColor: isExpense ? Colors.red.shade100 : Colors.green.shade100,
-                          child: Icon(isExpense ? Icons.arrow_downward : Icons.arrow_upward, color: isExpense ? Colors.red : Colors.green),
+                          backgroundColor:
+                              isExpense ? Colors.red[100] : Colors.green[100],
+                          child: Icon(
+                            isExpense
+                                ? Icons.arrow_downward
+                                : Icons.arrow_upward,
+                            color: isExpense ? Colors.red : Colors.green,
+                          ),
                         ),
-                        title: Text("${item['category']} (${item['account']})"),
-                        subtitle: Text(item['date'] ?? ''),
-                        trailing: Text(
-                          "${isExpense ? '-' : '+'} ₹${item['amount']}",
-                          style: TextStyle(fontWeight: FontWeight.bold, color: isExpense ? Colors.red : Colors.green),
+                        title: Text(tx.description),
+                        subtitle: Text('${tx.category} • ${tx.date}'),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              '${isExpense ? '-' : '+'}₹${tx.amount.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                color: isExpense ? Colors.red : Colors.green,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.grey),
+                              onPressed: () async {
+                                if (tx.id != null) {
+                                  await DatabaseHelper.instance
+                                      .deleteTransaction(tx.id!);
+                                  await _refreshData();
+                                }
+                              },
+                            ),
+                          ],
                         ),
                       );
                     },
                   ),
-          ],
-        ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showAddDialog,
+        child: const Icon(Icons.add),
       ),
     );
   }
