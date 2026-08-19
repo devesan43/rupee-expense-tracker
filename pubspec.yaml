@@ -1,5 +1,5 @@
-name: rupee_expense_tracker
-description: "Daily Expense Tracker App"
+name: expense_tracker
+description: "Expense Tracker App"
 publish_to: 'none'
 version: 1.0.0+1
 
