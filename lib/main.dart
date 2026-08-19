@@ -381,17 +381,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  @style
-  Color _getTypeColor(String type) {
-    switch (type) {
-      case 'Expense': return Colors.red;
-      case 'Income': return Colors.green;
-      case 'Savings': return Colors.blue;
-      case 'Credit': return Colors.orange;
-      default: return Colors.purple;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -401,7 +390,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       body: Column(
         children: [
-          // Summary Cards
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             child: Row(
@@ -420,10 +408,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
           ),
-
           const SizedBox(height: 10),
-
-          // Filters Bar
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 15),
             child: Row(
@@ -469,10 +454,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
           ),
-
           const Divider(),
-
-          // Transactions List
           Expanded(
             child: _filteredTransactions.isEmpty
                 ? const Center(child: Text('No transactions match the selected filters.'))
