@@ -2,8 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-import 'package:telephony/telephony.dart';
-
+import 'package:telephony_plus/telephony_plus.dart';
 // Background SMS Handler
 @pragma('vm:entry-point')
 void backgrounSmsHandler(SmsMessage message) {
