@@ -31,6 +31,21 @@ jobs:
           rm -rf android
           flutter create . --platforms=android --org com.expensetracker.app
 
+      - name: Force compileSdk 36 on all subprojects
+        run: |
+          cat << 'EOF' >> android/build.gradle
+
+          subprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty('android')) {
+                      project.android {
+                          compileSdkVersion 36
+                      }
+                  }
+              }
+          }
+          EOF
+
       - name: Clean build environment
         run: flutter clean
 
