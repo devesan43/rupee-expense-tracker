@@ -26,12 +26,12 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Generate clean Android project files
+      - name: Create local.properties
         run: |
-          rm -rf android
-          flutter create . --platforms=android --org com.expensetracker.app
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
 
-      - name: Force compileSdk 36 on all subprojects
+      - name: Enforce compileSdk 36 on all subproject plugins
         run: |
           cat << 'EOF' >> android/build.gradle
 
@@ -53,7 +53,7 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons --target-platform android-arm,android-arm64,android-x64
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
