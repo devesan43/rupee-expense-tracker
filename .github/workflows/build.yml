@@ -26,10 +26,13 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Create local.properties
+      - name: Generate clean Android project files
         run: |
-          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-          echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+          rm -rf android
+          flutter create . --platforms=android --org com.expensetracker.app
+
+      - name: Clean build environment
+        run: flutter clean
 
       - name: Install dependencies
         run: flutter pub get
