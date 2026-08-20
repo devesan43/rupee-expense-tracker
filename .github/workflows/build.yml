@@ -19,6 +19,9 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -26,10 +29,12 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Create local.properties
+      - name: Create local.properties and Gradle Wrapper
         run: |
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+          cd android
+          gradle wrapper
 
       - name: Clean build environment
         run: flutter clean
