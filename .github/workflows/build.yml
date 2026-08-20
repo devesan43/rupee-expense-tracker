@@ -40,5 +40,3 @@ jobs:
       with:
         name: ExpenseTracker-APK
         path: build/app/outputs/flutter-apk/app-release.apk
-        name: ExpenseTracker-APK
-        path: build/app/outputs/flutter-apk/app-release.apk
