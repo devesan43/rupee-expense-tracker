@@ -13,7 +13,6 @@ subprojects {
     project.evaluationDependsOn(':app')
 }
 
-// Force SDK 36 on all subprojects/plugins
 subprojects { p ->
     p.beforeEvaluate {
         if (p.hasProperty('android')) {
