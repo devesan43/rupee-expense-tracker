@@ -15,6 +15,7 @@ dependencies:
   permission_handler: ^11.0.1
   intl: ^0.18.1
   cupertino_icons: ^1.0.6
+  system_alert_window: ^0.10.0
 
 dev_dependencies:
   flutter_test:
