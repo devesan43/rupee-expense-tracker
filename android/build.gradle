@@ -1,3 +1,16 @@
+buildscript {
+    ext.kotlin_version = '1.8.22'
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.1.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
 allprojects {
     repositories {
         google()
@@ -13,6 +26,7 @@ subprojects {
     project.evaluationDependsOn(':app')
 }
 
+// Force SDK 36 on all subprojects/plugins
 subprojects { p ->
     p.beforeEvaluate {
         if (p.hasProperty('android')) {
