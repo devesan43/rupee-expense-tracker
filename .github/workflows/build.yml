@@ -11,17 +11,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout your repository code
       - uses: actions/checkout@v4
 
-      # 2. Set up Java JDK 17
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
 
-      # 3. Set up Flutter SDK
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -29,19 +26,20 @@ jobs:
           channel: 'stable'
           cache: true
 
-      # 4. Clean previous build artifacts
+      - name: Create local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+
       - name: Clean build environment
         run: flutter clean
 
-      # 5. Fetch all new pub dependencies
       - name: Install dependencies
         run: flutter pub get
 
-      # 6. Build APK
       - name: Build APK
         run: flutter build apk --release --no-tree-shake-icons
 
-      # 7. Upload APK Artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
