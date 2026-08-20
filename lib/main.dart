@@ -33,8 +33,8 @@ class ExpenseTrackerApp extends StatelessWidget {
 class TransactionModel {
   final int? id;
   final double amount;
-  final String type; // Expense, Income, Savings, Credit, Transfer
-  final String account; // Cash, Bank Account, Credit Card
+  final String type;
+  final String account;
   final String? toAccount;
   final String category;
   final String subCategory;
@@ -90,7 +90,7 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('expenses_v3.db');
+    _database = await _initDB('expenses_v4.db');
     return _database!;
   }
 
@@ -166,7 +166,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   List<TransactionModel> _allTransactions = [];
   List<TransactionModel> _filteredTransactions = [];
 
-  String _timeframe = 'Daily'; // Daily, Monthly, Yearly, All
+  String _timeframe = 'Daily';
   String _filterAccount = 'All';
 
   double _totalIncome = 0;
@@ -246,24 +246,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  Future<void> _scanSMSAndShowPrompt() async {
-    var status = await Permission.sms.request();
+  Future<void> _requestSMSPermissionAndScan() async {
+    PermissionStatus status = await Permission.sms.status;
+
+    if (!status.isGranted) {
+      status = await Permission.sms.request();
+    }
+
+    if (status.isPermanentlyDenied) {
+      if (mounted) {
+        openAppSettings();
+      }
+      return;
+    }
+
     if (!status.isGranted) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('SMS permission denied.')),
+          const SnackBar(content: Text('SMS permission denied. Enable it in App Info Settings.')),
         );
       }
       return;
     }
 
+    // Permission granted - Query SMS
     final SmsQuery query = SmsQuery();
-    final messages = await query.querySms(kinds: [SmsQueryKind.inbox], count: 30);
+    final messages = await query.querySms(kinds: [SmsQueryKind.inbox], count: 50);
 
     final txRegex = RegExp(
       r'(?:debited|spent|paid|credited|received|sent)\s*(?:by|for|rs\.?|inr)?\s*([0-9,]+(?:\.[0-9]+)?)',
       caseSensitive: false,
     );
+
+    int countParsed = 0;
 
     for (var msg in messages) {
       final body = msg.body ?? '';
@@ -287,19 +302,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
           }
 
           if (mounted) {
+            countParsed++;
             bool shouldContinue = await _showSmsParsedDialog(amount, autoType, autoCat, body);
             if (!shouldContinue) break;
           }
         }
       }
     }
+
+    if (countParsed == 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No bank transaction SMS found in recent inbox.')),
+      );
+    }
+
     await _refreshData();
   }
 
   Future<bool> _showSmsParsedDialog(double amount, String autoType, String autoCat, String rawText) async {
     String selectedType = autoType;
     String selectedCat = autoCat;
-    String subCategory = '';
     String selectedAccount = 'Bank Account';
 
     final subCatController = TextEditingController();
@@ -313,12 +335,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               if (!currentCats.contains(selectedCat)) selectedCat = currentCats.first;
 
               return AlertDialog(
-                title: const Text('Auto SMS Detected'),
+                title: const Text('Transaction Detected'),
                 content: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text('Amount: ₹$amount', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      Text('Amount: ₹$amount', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)),
                       const SizedBox(height: 8),
                       Text(rawText, style: const TextStyle(fontSize: 11, color: Colors.grey)),
                       const Divider(),
@@ -349,7 +371,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
                 actions: [
                   TextButton(
-                    onPressed: () => Navigator.pop(ctx, true), // Skip this SMS
+                    onPressed: () => Navigator.pop(ctx, true),
                     child: const Text('Skip / Ignore', style: TextStyle(color: Colors.red)),
                   ),
                   ElevatedButton(
@@ -362,7 +384,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           category: selectedCat,
                           subCategory: subCatController.text.trim(),
                           date: DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now()),
-                          description: 'SMS Auto Sync',
+                          description: 'SMS Sync',
                         ),
                       );
                       if (mounted) Navigator.pop(ctx, true);
@@ -594,7 +616,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           IconButton(
             icon: const Icon(Icons.sms),
             tooltip: 'Fetch SMS Transactions',
-            onPressed: _scanSMSAndShowPrompt,
+            onPressed: _requestSMSPermissionAndScan,
           ),
           IconButton(
             icon: const Icon(Icons.category),
@@ -605,7 +627,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       body: Column(
         children: [
-          // Timeframe Toggle Bar
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Row(
@@ -625,8 +646,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               }).toList(),
             ),
           ),
-
-          // Balance Overview Cards
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10),
             child: Row(
@@ -645,8 +664,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
           ),
-
-          // Account Filter Dropdown
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
             child: Row(
@@ -668,10 +685,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
           ),
-
           const Divider(height: 1),
-
-          // Transaction List
           Expanded(
             child: _filteredTransactions.isEmpty
                 ? const Center(child: Text('No transactions match current filters.'))
