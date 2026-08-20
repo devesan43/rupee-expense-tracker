@@ -25,6 +25,10 @@ jobs:
     - name: Generate Android Scaffolding
       run: flutter create --platforms=android --org=com.expensetracker.app .
 
+    - name: Inject Android Permissions
+      run: |
+        sed -i '/<manifest/a \    <uses-permission android:name="android.permission.READ_SMS"\/>\n    <uses-permission android:name="android.permission.RECEIVE_SMS"\/>\n    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"\/>' android/app/src/main/AndroidManifest.xml
+
     - name: Get Dependencies
       run: flutter pub get
 
@@ -34,5 +38,7 @@ jobs:
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
+        name: ExpenseTracker-APK
+        path: build/app/outputs/flutter-apk/app-release.apk
         name: ExpenseTracker-APK
         path: build/app/outputs/flutter-apk/app-release.apk
