@@ -17,42 +17,63 @@ jobs:
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: zulu
           java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.29.0'
-          channel: 'stable'
+          channel: stable
           cache: true
 
       - name: Generate Android native files
-        run: flutter create . --platforms=android --org com.expensetracker.app
-
-      - name: Enforce compileSdk 36 on subprojects
         run: |
-          cat << 'EOF' >> android/build.gradle
+          flutter create . \
+            --platforms=android \
+            --org com.expensetracker.app
 
-          subprojects {
-              afterEvaluate { project ->
-                  if (project.hasProperty('android')) {
-                      project.android {
-                          compileSdkVersion 36
-                      }
-                  }
-              }
-          }
-          EOF
+      - name: Configure Android SDK and NDK
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("android/app/build.gradle.kts")
+          text = path.read_text()
+
+          if 'ndkVersion = "27.0.12077973"' not in text:
+              text = text.replace(
+                  'android {',
+                  'android {\n    ndkVersion = "27.0.12077973"',
+                  1
+              )
+
+          if 'compileSdk = 36' not in text:
+              text = text.replace(
+                  'android {',
+                  'android {\n    compileSdk = 36',
+                  1
+              )
+
+          path.write_text(text)
+          PY
+
+          echo "===== android/app/build.gradle.kts ====="
+          cat android/app/build.gradle.kts
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Clean build
+      - name: Flutter clean
         run: flutter clean
 
       - name: Build APK
-        run: flutter build apk --release --no-tree-shake-icons --target-platform android-arm,android-arm64,android-x64
+        run: flutter build apk --release
+
+      - name: Check APK
+        run: |
+          echo "===== APK files ====="
+          find build -type f -name "*.apk" -print
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
